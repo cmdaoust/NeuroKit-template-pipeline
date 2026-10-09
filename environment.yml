@@ -1,0 +1,18 @@
+# Conda environment for the pipeline. Create and activate it with:
+#   conda env create -f environment.yml
+#   conda activate neurokit-pipeline
+name: neurokit-pipeline
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pandas>=2.2
+  - numpy>=1.26
+  - scipy
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - plotly>=5.20
+  - pip
+  - pip:
+      - neurokit2>=0.2.13
+      - bioread>=2025.5.2   # reads AcqKnowledge .acq files
