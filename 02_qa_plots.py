@@ -8,8 +8,9 @@ For every participant with cleaned data, saves one HTML plot per signal:
                  onset and a dotted line where its epoch ends (set by
                  EPOCH_WINDOWS and EVENT_DURATION_MODE).
 
-Use these to spot noisy segments. Bad ECG samples can be listed in
-MANUAL_REJECTION_FILE and 01a_process_ecg.py re-run with masking.
+Use these to spot noisy segments. The x axis shows sample numbers, so bad
+samples can be listed in MANUAL_REJECTION_FILE (any signal) and the 01_
+scripts re-run with masking.
 
 Requires: 01a/01b/01c to have been run.
 Input : RAW_DATA_PATH, CLEANED_DIRS
@@ -74,8 +75,9 @@ for label in participants:
             print(f"  {col} not found.")
             continue
 
-        raw_plot = raw_data[sig].iloc[::DS].reset_index(drop=True)
-        clean_plot = df_clean[col].iloc[::DS].reset_index(drop=True)
+        # Plot every DS-th sample, but keep the real sample numbers on the x axis
+        raw_plot = raw_data[sig].reset_index(drop=True).iloc[::DS]
+        clean_plot = df_clean[col].reset_index(drop=True).iloc[::DS]
         y_min, y_max = clean_plot.min(), clean_plot.max()
 
         # Events (from the trigger channels kept in the cleaned file) and epoch ends
@@ -84,22 +86,20 @@ for label in participants:
         except KeyError as e:
             print(f"  {e} Plotting without events.")
             events = {"onset": [], "duration": [], "condition": [], "label": []}
-        _, ends = utils.epoch_window(events, sig, sampling_rate)
-        if not isinstance(ends, list):
-            ends = [ends] * len(events["onset"])
+        ends = utils.epoch_ends(events, sig, sampling_rate)
         end_samples = [o + int(e * sampling_rate) for o, e in zip(events["onset"], ends)]
 
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                             subplot_titles=("Raw signal", "Cleaned signal"))
-        fig.add_trace(go.Scatter(y=raw_plot, mode="lines", name="Raw",
+        fig.add_trace(go.Scatter(x=raw_plot.index, y=raw_plot, mode="lines", name="Raw",
                                  line=dict(color="darkcyan")), row=1, col=1)
-        fig.add_trace(go.Scatter(y=clean_plot, mode="lines", name="Cleaned",
+        fig.add_trace(go.Scatter(x=clean_plot.index, y=clean_plot, mode="lines", name="Cleaned",
                                  line=dict(color="crimson")), row=2, col=1)
 
         for condition in dict.fromkeys(events["condition"]):   # one legend entry per condition
             idx = [i for i, c in enumerate(events["condition"]) if c == condition]
-            onset_ds = [events["onset"][i] // DS for i in idx]
-            end_ds = [end_samples[i] // DS for i in idx]
+            onset_ds = [int(events["onset"][i]) for i in idx]
+            end_ds = [int(end_samples[i]) for i in idx]
 
             # Hoverable marker at each event onset
             fig.add_trace(go.Scatter(x=onset_ds, y=[y_min] * len(onset_ds), mode="markers",
@@ -114,7 +114,7 @@ for label in participants:
                                      line=dict(color="darkblue", width=0.8, dash="dot")), row=2, col=1)
 
         fig.update_layout(
-            title=f"{label} – {sig} QA (x axis = samples / {DS})",
+            title=f"{label} – {sig} QA (x axis = sample number; seconds = sample / {sampling_rate})",
             height=750, hovermode="x unified",
         )
         fig.write_html(out_dir / f"{label}_{sig}_QA_epochs.html")

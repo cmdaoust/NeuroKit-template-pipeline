@@ -8,8 +8,8 @@ Part 1: for each participant with cleaned data
           available cleaned file) and saves them to EPOCHS_PATH/sub-XXX_events.pkl
         - cuts epochs for each signal using EPOCH_WINDOWS / EVENT_DURATION_MODE
           and saves EPOCHS_PATH/sub-XXX_<SIGNAL>_epochs.pkl
-Part 2: averages the cleaned signal across trials and participants for each
-        condition and saves a line plot to FIGURES_PATH.
+Part 2: averages the cleaned EDA signal across trials and participants for
+        each condition and saves a line plot to FIGURES_PATH.
 
 Requires: at least one of 01a/01b/01c to have been run.
 """
@@ -124,6 +124,8 @@ def plot_average_epochs(signal, title=None, participants=None):
     plt.show()
 
 
-plot_average_epochs("RSP", "Average respiration (RSP) across conditions")
+# Group-average plot for EDA only: skin conductance responses are slow and
+# time-locked to events, so the averaged waveform is meaningful. Averaging raw
+# ECG or respiration waveforms across trials is not (beats and breaths don't
+# line up across trials), so those use the per-trial results instead.
 plot_average_epochs("EDA", "Average electrodermal activity (EDA) across conditions")
-plot_average_epochs("ECG", "Average ECG across conditions")

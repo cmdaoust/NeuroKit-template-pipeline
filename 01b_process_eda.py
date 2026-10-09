@@ -3,6 +3,7 @@
 01b_process_eda.py — clean EDA and run event-related EDA analysis for all participants.
 
 Input : raw files in RAW_DATA_PATH
+        (optional) MANUAL_REJECTION_FILE listing bad samples
 Output: CLEANED_DIRS["EDA"]/sub-XXX_EDA_cleaned.csv   (one per participant)
         COMBINED_FILES["EDA"]                          (one row per participant x trial)
         LOG_PATH/log_eda.txt                           (skipped / failed participants)
@@ -56,11 +57,17 @@ for raw_file in utils.list_raw_files():
 
         print(f"Processing {label}...")
 
-        # ---- Load, events, cleaning ----
+        # ---- Load + mask manually flagged bad segments (MANUAL_REJECTION_FILE) ----
         data, sampling_rate = utils.load_raw_data(raw_file)
+        signal = utils.apply_manual_masking(data[SIGNAL], label, SIGNAL, sampling_rate)
+        if signal is None:
+            log(f"{label} skipped: {SIGNAL} marked unusable (onset_sample 'NA').")
+            continue
+
+        # ---- Events, cleaning ----
         events = utils.find_events(data)
         data_clean, info = nk.bio_process(
-            eda=data[SIGNAL], keep=data[cfg.EVENT_COLUMNS], sampling_rate=sampling_rate
+            eda=signal, keep=data[cfg.EVENT_COLUMNS], sampling_rate=sampling_rate
         )
         data_clean.to_csv(cleaned_dir / f"{label}_{SIGNAL}_cleaned.csv", index=False)
 

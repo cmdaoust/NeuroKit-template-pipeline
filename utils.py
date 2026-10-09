@@ -4,6 +4,7 @@ utils.py — small helpers shared by all pipeline scripts.
 If your raw data are not AcqKnowledge (.acq) files, load_raw_data() is the
 only function you need to change.
 """
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,7 @@ def load_raw_data(file_path):
     else:
         raise ValueError(f"Don't know how to read '{suffix}' files. Edit utils.load_raw_data().")
     data = data.rename(columns=cfg.CHANNEL_RENAME)
+    data.attrs["sampling_rate"] = sampling_rate
     return data, sampling_rate
 
 
@@ -68,15 +70,17 @@ def find_raw_file(participant_id):
 # Events
 # -----------------------------------------------------------------------------
 def find_events(data):
-    """Detect events on every channel in cfg.EVENT_CHANNELS (any number of channels).
+    """Detect events on every channel in cfg.EVENT_CHANNELS using NeuroKit.
 
-    A channel is "on" while it is above EVENT_THRESHOLD. Each time it switches on
-    is one event: onset = sample it switches on, duration = samples until it
-    switches off. The event's condition is the label given in EVENT_CHANNELS.
+    Each channel is passed separately to nk.events_find(), which finds every time
+    the channel goes above EVENT_THRESHOLD (onset) and how long it stays there
+    (duration). Each channel's events get that channel's condition label, and
+    nk.events_create() combines all channels into one events dict, sorted by
+    onset, with trial labels "1", "2", ... This works for one channel or many.
 
-    Returns a NeuroKit-style events dict (works with nk.epochs_create):
-        {"onset": [...], "duration": [...], "condition": [...], "label": [...]}
-    sorted by onset, with labels "1", "2", ... (trial numbers).
+    (Passing several channels to nk.events_find() at once would merge them into
+    numeric codes 1, 2, 4, ... and passing a single-column table makes it crash,
+    so channels are processed one at a time.)
     """
     missing = [ch for ch in cfg.EVENT_CHANNELS if ch not in data.columns]
     if missing:
@@ -85,21 +89,31 @@ def find_events(data):
             "Check EVENT_CHANNELS in your config_local.py."
         )
 
-    found = []
+    onsets, durations, conditions = [], [], []
     for channel, condition in cfg.EVENT_CHANNELS.items():
-        on = (data[channel].to_numpy(dtype=float) > cfg.EVENT_THRESHOLD).astype(np.int8)
-        edges = np.diff(np.concatenate([[0], on, [0]]))
-        onsets = np.flatnonzero(edges == 1)
-        offsets = np.flatnonzero(edges == -1)
-        found += [(on_, off - on_, condition) for on_, off in zip(onsets, offsets)]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # "no events found" is reported by 00c instead
+            ev = nk.events_find(
+                data[channel].astype(float),     # one channel at a time (a 1-D signal)
+                threshold=cfg.EVENT_THRESHOLD,
+                threshold_keep="above",
+                duration_min=max(1, int(cfg.EVENT_MIN_DURATION_SEC * _sampling_rate_hint(data))),
+            )
+        onsets += list(ev["onset"])
+        durations += list(ev["duration"])
+        conditions += [condition] * len(ev["onset"])
 
-    found.sort(key=lambda e: e[0])
-    return {
-        "onset": np.array([e[0] for e in found], dtype=int),
-        "duration": np.array([e[1] for e in found], dtype=int),
-        "condition": [e[2] for e in found],
-        "label": [str(i + 1) for i in range(len(found))],
-    }
+    order = np.argsort(onsets, kind="stable")
+    return nk.events_create(
+        event_onsets=np.array(onsets, dtype=int)[order],
+        event_durations=np.array(durations, dtype=int)[order],
+        event_conditions=[conditions[i] for i in order],
+    )
+
+
+def _sampling_rate_hint(data):
+    """Sampling rate attached to the data by load_raw_data (falls back to config)."""
+    return data.attrs.get("sampling_rate", cfg.SAMPLING_RATE)
 
 
 def epoch_window(events, signal, sampling_rate):
@@ -113,8 +127,18 @@ def epoch_window(events, signal, sampling_rate):
     if cfg.EVENT_DURATION_MODE == "fixed":
         return win["start"], win["end"]
     if cfg.EVENT_DURATION_MODE == "channel":
+        if win["end"] == 0:
+            return win["start"], "from_events"     # NeuroKit: epoch ends when the channel switches off
         return win["start"], [d / sampling_rate + win["end"] for d in events["duration"]]
     raise ValueError(f"EVENT_DURATION_MODE must be 'fixed' or 'channel', not {cfg.EVENT_DURATION_MODE!r}")
+
+
+def epoch_ends(events, signal, sampling_rate):
+    """End of each event's epoch, in seconds after its onset (one value per event)."""
+    win = cfg.EPOCH_WINDOWS[signal]
+    if cfg.EVENT_DURATION_MODE == "fixed":
+        return [win["end"]] * len(events["onset"])
+    return [d / sampling_rate + win["end"] for d in events["duration"]]
 
 
 def make_epochs(data_clean, events, signal, sampling_rate):
@@ -122,6 +146,58 @@ def make_epochs(data_clean, events, signal, sampling_rate):
     start, end = epoch_window(events, signal, sampling_rate)
     return nk.epochs_create(data_clean, events, sampling_rate=sampling_rate,
                             epochs_start=start, epochs_end=end)
+
+
+# -----------------------------------------------------------------------------
+# Manual masking of bad segments (all signals)
+# -----------------------------------------------------------------------------
+_REJECTIONS = None
+
+
+def _load_rejections():
+    """Read MANUAL_REJECTION_FILE once (empty table if not set / not found)."""
+    global _REJECTIONS
+    if _REJECTIONS is None:
+        path = cfg.MANUAL_REJECTION_FILE
+        if path and Path(path).exists():
+            # keep_default_na=False so a literal "NA" stays text (pandas would turn it into NaN)
+            _REJECTIONS = pd.read_csv(path, dtype=str, keep_default_na=False)
+            _REJECTIONS.columns = [c.strip() for c in _REJECTIONS.columns]
+        else:
+            _REJECTIONS = pd.DataFrame(columns=["participant", "signal", "onset_sample"])
+    return _REJECTIONS
+
+
+def mask_window_sec(signal):
+    """MASK_WINDOW_SEC for this signal (a single number, or a dict per signal)."""
+    w = cfg.MASK_WINDOW_SEC
+    return w.get(signal, 0) if isinstance(w, dict) else w
+
+
+def apply_manual_masking(raw, label, signal, sampling_rate):
+    """Mask bad samples listed in MANUAL_REJECTION_FILE for this participant + signal.
+
+    Returns the signal with masked samples set to NaN, or None if the file marks
+    this participant's signal as unusable (onset_sample = "NA").
+    Each listed sample is masked +/- MASK_WINDOW_SEC seconds. NeuroKit's cleaning
+    then fills masked samples with the last good value (a flat segment).
+    """
+    raw = raw.astype(float).copy()
+    rej = _load_rejections()
+    rows = rej[(rej["participant"].str.strip() == label) &
+               (rej["signal"].str.strip().str.upper() == signal.upper())]
+    if rows.empty:
+        return raw
+    onsets = rows["onset_sample"].astype(str).str.strip()
+    if onsets.str.upper().eq("NA").any():
+        return None
+    half = int(mask_window_sec(signal) * sampling_rate)
+    if half > 0:
+        for onset in onsets.astype(int):
+            raw.iloc[max(0, onset - half): min(len(raw), onset + half)] = np.nan
+        print(f"{label}: masked {len(onsets)} {signal} segment(s) "
+              f"({raw.isna().mean() * 100:.2f}% of signal)")
+    return raw
 
 
 # -----------------------------------------------------------------------------
@@ -154,9 +230,8 @@ def hrv_per_epoch(peaks, events, sampling_rate):
     Returns a DataFrame indexed by trial label (same as the ECG results' Trial),
     or None if no epoch is long enough.
     """
-    start, ends = epoch_window(events, "ECG", sampling_rate)
-    if not isinstance(ends, list):
-        ends = [ends] * len(events["onset"])
+    start = cfg.EPOCH_WINDOWS["ECG"]["start"]
+    ends = epoch_ends(events, "ECG", sampling_rate)
     rows = {}
     for onset, end, trial in zip(events["onset"], ends, events["label"]):
         if end - start < cfg.HRV_MIN_EPOCH_SEC:

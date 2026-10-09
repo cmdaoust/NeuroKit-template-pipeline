@@ -16,7 +16,7 @@ fixed-length epochs.
 > **New to Python or the command line?** Follow **[GETTING_STARTED.md](GETTING_STARTED.md)**, a
 > step-by-step guide from installation to results.
 
-| Interactive QA plot: raw vs cleaned signal with event onsets and epoch ends | Group-average response per condition |
+| Interactive QA plot: raw vs cleaned signal with event onsets and epoch ends | Group-average EDA response per condition |
 |---|---|
 | ![QA plot](docs/images/example_qa_plot.png) | ![Average EDA](docs/images/example_average_eda.png) |
 
@@ -90,11 +90,11 @@ folder** so they can find `config.py`.
 | `make_example_data.py` | — | Creates simulated recordings for 4 participants (called automatically by `--demo`). | `example_data/Data/Physiology/Raw/*.csv` |
 | `00a_single_subject_ecg.py`<br>`00b_single_subject_eda.py` *(optional)* | raw data | Runs the ECG or EDA pipeline on `TEST_PARTICIPANT` with diagnostic plots. Useful for checking a new dataset. | `SINGLE_SUBJECT_OUTPUT_PATH/sub-XXX_<signal>_results.csv` |
 | `00c_check_events.py` *(recommended)* | raw data | Lists every detected event with its time, how long its trigger channel stayed on, and its condition. It flags events that overlap another trigger channel, summarises trials and durations per condition, and states each signal's epoch in plain words. Run `python 00c_check_events.py 012` to check participant 012. | printed report |
-| `01a_process_ecg.py` | raw data | For each participant: load → detect events → mask manually flagged bad ECG samples (optional) → clean with `nk.bio_process` → epoch → `nk.ecg_analyze` (event-related) → **HRV** (see [Heart rate variability](#heart-rate-variability-hrv)). Saves after every participant, so you can stop and resume. | `CLEANED_DIRS["ECG"]/sub-XXX_ECG_cleaned.csv`<br>`COMBINED_FILES["ECG"]`<br>`HRV_FILE`<br>`LOG_PATH/log_ecg.txt` |
+| `01a_process_ecg.py` | raw data | For each participant: load → mask manually flagged bad samples (optional) → detect events → clean with `nk.bio_process` → epoch → `nk.ecg_analyze` (event-related) → **HRV** (see [Heart rate variability](#heart-rate-variability-hrv)). Saves after every participant, so you can stop and resume. | `CLEANED_DIRS["ECG"]/sub-XXX_ECG_cleaned.csv`<br>`COMBINED_FILES["ECG"]`<br>`HRV_FILE`<br>`LOG_PATH/log_ecg.txt` |
 | `01b_process_eda.py` | raw data | Same as `01a` for EDA (`nk.eda_analyze`). | `CLEANED_DIRS["EDA"]/…`, `COMBINED_FILES["EDA"]`, `log_eda.txt` |
 | `01c_process_rsp.py` | raw data | Same as `01a` for respiration (`nk.rsp_analyze`). | `CLEANED_DIRS["RSP"]/…`, `COMBINED_FILES["RSP"]`, `log_rsp.txt` |
 | `02_qa_plots.py` | `01a`–`01c` | One interactive HTML per participant and signal: raw signal on top, cleaned signal below, with a solid line at each event onset and a dotted line where each epoch ends. | `QA_PLOTS_PATH/sub-XXX/sub-XXX_<signal>_QA_epochs.html` |
-| `03_epochs_and_average_plots.py` | `01a`–`01c` | Detects events once per participant, saves events and epochs for each signal, and plots the cleaned signal averaged across trials and participants for each condition. | `EPOCHS_PATH/sub-XXX_events.pkl`<br>`EPOCHS_PATH/sub-XXX_<signal>_epochs.pkl`<br>`FIGURES_PATH/average_<signal>_by_condition.png` |
+| `03_epochs_and_average_plots.py` | `01a`–`01c` | Detects events once per participant, saves events and epochs for each signal, and plots the cleaned **EDA** signal averaged across trials and participants for each condition. | `EPOCHS_PATH/sub-XXX_events.pkl`<br>`EPOCHS_PATH/sub-XXX_<signal>_epochs.pkl`<br>`FIGURES_PATH/average_EDA_by_condition.png` |
 | `config.py` | — | All settings and their defaults. | — |
 | `config_local.example.py` | — | Template for your personal `config_local.py`. | — |
 | `utils.py` | — | Shared helpers: loading raw files, finding events, logging. | — |
@@ -129,28 +129,42 @@ for what each feature means.
 - **R-peak correction.** Before computing HRV, R-peaks are re-detected with NeuroKit's artifact
   correction, which fixes missed and extra beats (`HRV_CORRECT_ARTIFACTS = True`). HRV is still
   sensitive to noisy ECG, so check the QA plots.
-- **Masked segments.** If you mask bad segments, NeuroKit interpolates across them. HRV from
+- **Masked segments.** Masked ECG becomes a flat line, which can hide or merge beats. HRV from
   heavily masked recordings is unreliable.
 - **Index definitions.** See NeuroKit's [`hrv`](https://neuropsychology.github.io/NeuroKit/functions/hrv.html)
   documentation for what each index means.
 
-### Masking bad ECG segments (optional)
+### Masking bad segments (optional, any signal)
 
-After checking the QA plots, list bad ECG samples in a CSV at `MANUAL_REJECTION_FILE`:
+After checking the QA plots, list bad samples in a CSV at `MANUAL_REJECTION_FILE`
+(default `Data/manual_epoch_rejection.csv`). It works for ECG, EDA and RSP:
 
 ```csv
 participant,signal,onset_sample
 sub-012,ECG,153200
-sub-012,ECG,201450
+sub-012,EDA,201450
+sub-017,RSP,88000
 sub-031,ECG,NA
 ```
 
-Then set `ECG_BAD_WINDOW_SEC` (e.g. `1`) and `RERUN_PROCESSED_PARTICIPANTS = True` in
-`config_local.py`, and re-run `01a`.
+- `onset_sample` is the sample number at the centre of the bad stretch. Hover over the QA plot to
+  read it from the x axis.
+- `NA` marks that participant's whole signal as unusable, so they're skipped for that signal only.
 
-- Each listed sample is masked ± `ECG_BAD_WINDOW_SEC` seconds. **With the default of 0, nothing is masked.**
-- NeuroKit *interpolates* across masked samples when cleaning; it does not drop them.
-- `NA` marks a participant's whole ECG as unusable, so they are skipped.
+Then set the masking window in `config_local.py` and re-run the `01` scripts with
+`RERUN_PROCESSED_PARTICIPANTS = True`:
+
+```python
+MASK_WINDOW_SEC = 1                                  # same for all signals, or
+MASK_WINDOW_SEC = {"ECG": 1, "EDA": 2, "RSP": 2}     # per signal
+```
+
+- Each listed sample is masked ± `MASK_WINDOW_SEC` seconds. **With the default of 0, nothing is masked**
+  (only `NA` rows have an effect).
+- **What masking does.** NeuroKit's cleaning fills masked samples with the last good value, so a
+  masked stretch becomes a flat line. It removes a spike or artefact from the signal but doesn't
+  drop the trial. Features from epochs that overlap a masked stretch are computed partly from
+  that flat segment, so check those trials or exclude them in your statistics.
 - If the file doesn't exist, masking is skipped.
 
 ---
@@ -212,7 +226,7 @@ If you misspell a setting name in `config_local.py`, you'll get a warning when t
 | **Paths** | `PROJECT_ROOT` | **Required.** Top-level project folder, usually your study folder in Box Drive; the default paths are built from it. `~` (home folder) is allowed. You can also set it with the environment variable `NK_PROJECT_ROOT`. |
 | | `DATA_PATH` | Parent data folder (default `PROJECT_ROOT/Data`). |
 | | `RAW_DATA_PATH` | Folder with one raw file per participant (default `DATA_PATH/Physiology/Raw`). |
-| | `MANUAL_REJECTION_FILE` | Optional bad-ECG list (see above). `None` disables masking. |
+| | `MANUAL_REJECTION_FILE` | Optional list of bad samples for any signal (see [Masking](#masking-bad-segments-optional-any-signal)). `None` disables masking. |
 | | `OUTPUT_PATH` | Parent folder for all outputs (default `DATA_PATH`). |
 | | `COMBINED_PATH`, `CLEANED_PATH`, `EPOCHS_PATH`, `QA_PLOTS_PATH`, `FIGURES_PATH`, `LOG_PATH`, `SINGLE_SUBJECT_OUTPUT_PATH` | Where each type of output goes. Folders are created automatically. |
 | | `COMBINED_FILES` | Filename of each signal's results CSV. |
@@ -222,13 +236,14 @@ If you misspell a setting name in `config_local.py`, you'll get a warning when t
 | | `CHANNEL_RENAME` | Maps your raw channel names to `ECG`, `EDA`, `RSP`. |
 | **Events** | `EVENT_CHANNELS` | Your trigger channels and the condition label for each: `{channel name: label}`. Use any number of channels. See [Setting up events](#setting-up-events). |
 | | `EVENT_THRESHOLD` | A trigger channel counts as *on* while its value is above this (default `0.001`). |
+| | `EVENT_MIN_DURATION_SEC` | Ignore events shorter than this, e.g. trigger glitches (default `0`, keep all). |
 | | `EVENT_DURATION_MODE` | `"fixed"` (every epoch the same length) or `"channel"` (each epoch lasts as long as its trigger channel stays on). |
 | | `SAMPLING_RATE` | Used for `.csv` raw files and for re-loading cleaned files. `.acq` files report their own rate. |
 | **Participants** | `EXCLUDED_PARTICIPANTS` | IDs that are always skipped, e.g. `{"001", "084"}`. |
 | | `RERUN_PROCESSED_PARTICIPANTS` | `False` = resume (skip anyone already in the results CSV). `True` = re-process everyone and replace their rows. |
 | | `TEST_PARTICIPANT` | Participant used by the `00` scripts. |
 | **Analysis** | `EPOCH_WINDOWS` | Epoch `start` and `end` in seconds for each signal. `start` is relative to the event onset (negative = before). What `end` means depends on `EVENT_DURATION_MODE`. Steps `01`, `02` and `03` all use these values. |
-| | `ECG_BAD_WINDOW_SEC` | Masking window for bad ECG samples. |
+| | `MASK_WINDOW_SEC` | Seconds masked either side of each bad sample: one number, or a dict per signal. |
 | **HRV** | `HRV_WHOLE_RECORDING` | Compute HRV for each participant's whole recording (default `True`). |
 | | `HRV_SEGMENT_SEC` | `None` (whole recording) or `(start, end)` in seconds, e.g. `(0, 300)`. |
 | | `HRV_INDICES` | Which index groups to compute for the whole recording: any of `"time"`, `"frequency"`, `"nonlinear"`. |
@@ -258,12 +273,17 @@ EVENT_CHANNELS = {"Ch1": "Rest", "Ch2": "Low load", "Ch3": "High load", "Ch4": "
 The channel names must match the column names in your data (after `CHANNEL_RENAME`). The labels
 appear in the `Condition` column of your results.
 
+Events are detected with NeuroKit's `nk.events_find()`, one channel at a time: an event starts
+when the channel rises above `EVENT_THRESHOLD` and ends when it drops back below it. The events
+from all channels are then combined in time order with `nk.events_create()`. To ignore very short
+trigger glitches, set `EVENT_MIN_DURATION_SEC`, e.g. `0.005`.
+
 **2. Choose how long each event lasts** with `EVENT_DURATION_MODE`:
 
 | Mode | Use it when | Epoch runs from | Epoch runs until |
 |---|---|---|---|
-| `"fixed"` (default) | Triggers are short pulses marking the *start* of each trial, and every trial should be analysed over the same time window. | onset + `start` | onset + `end` |
-| `"channel"` | The trigger channel stays on for the *whole* trial or block (onset to offset), and trials or blocks can differ in length. | onset + `start` | the moment the channel switches off + `end` |
+| `"fixed"` (default) | The trigger marks the **onset** and the event length is set by your task (e.g. a 100 ms pulse at the start of every 6 s trial). How long the trigger channel stays on is ignored. | onset + `start` | onset + `end` |
+| `"channel"` | The trigger channel stays on for the **whole** trial or block, so its onset *and* offset mark the event, and events can differ in length. | onset + `start` | the moment the channel switches off + `end` |
 
 Examples:
 
@@ -299,7 +319,7 @@ PROJECT_ROOT/
     │   ├── NeuroKit_Cleaned/{ECG,EDA,RSP}/ ← CLEANED_DIRS
     │   └── Events/                         ← EPOCHS_PATH
     ├── Combined/                           ← COMBINED_FILES and HRV_FILE (your results)
-    ├── Figures/                            ← FIGURES_PATH (group-average plots)
+    ├── Figures/                            ← FIGURES_PATH (group-average EDA plot)
     │   └── QA_Plots/                       ← QA_PLOTS_PATH (one subfolder per participant)
     ├── Processing/                         ← LOG_PATH
     └── Single_Subject/                     ← SINGLE_SUBJECT_OUTPUT_PATH

@@ -63,7 +63,7 @@ This makes four fake participants and runs the whole pipeline on them. When it s
 **`Pipeline finished.`**, open the `example_data/Data` folder inside the pipeline folder:
 
 - `Figures/QA_Plots/` holds interactive plots. Double-click a `.html` file to open it in your browser.
-- `Figures/` also holds the average-response plots.
+- `Figures/` also holds the average EDA response plot.
 - `Combined/` holds the results tables (`.csv`), which open in Excel.
 
 If that worked, your setup is complete.
@@ -180,7 +180,7 @@ takes longer, because each raw file is downloaded as it's opened. Results are sa
 |---|---|
 | `Data/Combined/` | **Your results:** one table per signal (`ecg_…`, `eda_…`, `rsp_…`), with one row per trial, plus `hrv_results_combined.csv` with heart rate variability for each participant. Open them in Excel, SPSS, JASP or R. |
 | `Data/Figures/QA_Plots/` | One interactive plot per participant and signal. **Look through these** to check the cleaned signals look sensible. |
-| `Data/Figures/` | Average response for each condition. |
+| `Data/Figures/` | Average EDA (skin conductance) response for each condition. |
 | `Data/Processing/` | Log files listing any participants that were skipped, and why. |
 
 ---

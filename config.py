@@ -70,7 +70,7 @@ PROJECT_ROOT = _path(PROJECT_ROOT)
 DATA_PATH = _path(_get("DATA_PATH", PROJECT_ROOT / "Data"))                      # Parent data folder
 RAW_DATA_PATH = _path(_get("RAW_DATA_PATH", DATA_PATH / "Physiology" / "Raw"))   # One raw file per participant
 
-# Optional CSV of bad ECG samples found by visual inspection
+# Optional CSV of bad samples found by visual inspection, for any signal
 # (columns: participant, signal, onset_sample). None = no masking.
 # If the file doesn't exist, masking is skipped automatically.
 MANUAL_REJECTION_FILE = _path(_get("MANUAL_REJECTION_FILE", DATA_PATH / "manual_epoch_rejection.csv"))
@@ -135,11 +135,16 @@ if "EVENT_COLUMNS" in _overrides:
 
 # A channel counts as "on" while its value is above this threshold.
 EVENT_THRESHOLD = _get("EVENT_THRESHOLD", 0.001)
+# Ignore "events" shorter than this (seconds), e.g. 0.005 to drop trigger glitches.
+# 0 = keep everything (NeuroKit's default of at least 1 sample).
+EVENT_MIN_DURATION_SEC = _get("EVENT_MIN_DURATION_SEC", 0)
 
 # How long is each event?
-#   "fixed"   - only the ONSET matters. Every epoch has the same length, set by
-#               EPOCH_WINDOWS start/end (relative to onset). Use this when your
-#               triggers are short pulses (e.g. 100 ms) marking the start of a trial.
+#   "fixed"   - only the ONSET matters; how long the trigger stays on is ignored.
+#               Every epoch has the same length, set by EPOCH_WINDOWS start/end
+#               (relative to onset). Use this when the trigger marks the start of
+#               a trial whose length is fixed by your task (e.g. a 100 ms pulse at
+#               the start of every 6 s trial).
 #   "channel" - the event lasts as long as the channel stays ON (onset -> offset).
 #               Epochs run from onset + start until the channel switches off,
 #               plus `end` seconds. Use this when the channel stays high for the
@@ -194,10 +199,12 @@ HRV_MIN_EPOCH_SEC = _get("HRV_MIN_EPOCH_SEC", 30)
 # beats) before computing HRV. Recommended.
 HRV_CORRECT_ARTIFACTS = _get("HRV_CORRECT_ARTIFACTS", True)
 
-# ECG masking: seconds masked either side of each bad sample in
-# MANUAL_REJECTION_FILE. 0 = nothing is masked. NeuroKit interpolates over
-# masked (NaN) samples during cleaning; it does not remove them.
-ECG_BAD_WINDOW_SEC = _get("ECG_BAD_WINDOW_SEC", 0)
+# Manual masking (any signal): seconds masked either side of each bad sample
+# listed in MANUAL_REJECTION_FILE. One number for all signals, or per signal,
+# e.g. {"ECG": 1, "EDA": 2, "RSP": 2}. 0 = nothing is masked.
+# NeuroKit fills masked (NaN) samples with the last good value during cleaning
+# (a flat segment); it does not remove them.
+MASK_WINDOW_SEC = _get("MASK_WINDOW_SEC", 0)
 
 # QA plots: plot every Nth sample to keep HTML files small (1 = no downsampling)
 DOWNSAMPLE_FACTOR = _get("DOWNSAMPLE_FACTOR", 5)

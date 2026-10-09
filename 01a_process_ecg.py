@@ -4,7 +4,7 @@
 for all participants.
 
 Input : raw files in RAW_DATA_PATH
-        (optional) MANUAL_REJECTION_FILE listing bad ECG samples
+        (optional) MANUAL_REJECTION_FILE listing bad samples
 Output: CLEANED_DIRS["ECG"]/sub-XXX_ECG_cleaned.csv   (one per participant)
         COMBINED_FILES["ECG"]                          (one row per participant x trial;
                                                         includes per-epoch HRV for long epochs)
@@ -16,7 +16,6 @@ All paths and settings live in config.py.
 from pathlib import Path
 
 import neurokit2 as nk
-import numpy as np
 import pandas as pd
 
 import config as cfg
@@ -32,14 +31,6 @@ combined_file = Path(cfg.COMBINED_FILES[SIGNAL])
 cleaned_dir.mkdir(parents=True, exist_ok=True)
 combined_file.parent.mkdir(parents=True, exist_ok=True)
 log = utils.Logger("ecg")
-
-# Optional list of bad ECG samples from manual inspection
-if cfg.MANUAL_REJECTION_FILE and Path(cfg.MANUAL_REJECTION_FILE).exists():
-    # keep_default_na=False so a literal "NA" stays a string (pandas would otherwise turn it into NaN)
-    bad_events_df = pd.read_csv(cfg.MANUAL_REJECTION_FILE, dtype=str, keep_default_na=False)
-else:
-    bad_events_df = pd.DataFrame(columns=["participant", "signal", "onset_sample"])
-    print("No manual rejection file found: ECG will not be masked.")
 
 combined_df = utils.load_combined(combined_file)
 processed = utils.processed_ids(combined_df)
@@ -71,28 +62,14 @@ for raw_file in utils.list_raw_files():
                 hrv_df = hrv_df[hrv_df["participant_id"] != label]
                 hrv_df.to_csv(cfg.HRV_FILE, index=False)
 
-        # ---- Manually flagged bad segments ----
-        participant_bad = bad_events_df[
-            (bad_events_df["participant"] == label) & (bad_events_df["signal"] == SIGNAL)
-        ]
-        # An onset_sample of "NA" marks the whole ECG recording as unusable
-        if participant_bad["onset_sample"].astype(str).str.strip().str.upper().eq("NA").any():
-            log(f"{label} skipped: onset_sample contains 'NA' (ECG unusable).")
-            continue
-
         print(f"Processing {label}...")
 
-        # ---- Load ----
+        # ---- Load + mask manually flagged bad segments (MANUAL_REJECTION_FILE) ----
         data, sampling_rate = utils.load_raw_data(raw_file)
-        ecg = data[SIGNAL].copy().astype(float)
-
-        # ---- Mask bad segments (NeuroKit interpolates over NaNs when cleaning) ----
-        if not participant_bad.empty and cfg.ECG_BAD_WINDOW_SEC > 0:
-            half_window = int(cfg.ECG_BAD_WINDOW_SEC * sampling_rate)
-            for onset in participant_bad["onset_sample"].astype(int):
-                ecg.iloc[max(0, onset - half_window): min(len(ecg), onset + half_window)] = np.nan
-            print(f"{label}: masked {len(participant_bad)} ECG segments "
-                  f"({ecg.isna().mean() * 100:.2f}% of signal)")
+        ecg = utils.apply_manual_masking(data[SIGNAL], label, SIGNAL, sampling_rate)
+        if ecg is None:
+            log(f"{label} skipped: {SIGNAL} marked unusable (onset_sample 'NA').")
+            continue
 
         # ---- Events, cleaning ----
         events = utils.find_events(data)
