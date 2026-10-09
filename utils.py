@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import neurokit2 as nk
+import numpy as np
 import pandas as pd
 
 import config as cfg
@@ -67,19 +68,111 @@ def find_raw_file(participant_id):
 # Events
 # -----------------------------------------------------------------------------
 def find_events(data):
-    """Detect task events from the event channels defined in config."""
-    return nk.events_find(
-        data[cfg.EVENT_COLUMNS],
-        threshold=cfg.EVENT_THRESHOLD,
-        threshold_keep="above",
-    )
+    """Detect events on every channel in cfg.EVENT_CHANNELS (any number of channels).
+
+    A channel is "on" while it is above EVENT_THRESHOLD. Each time it switches on
+    is one event: onset = sample it switches on, duration = samples until it
+    switches off. The event's condition is the label given in EVENT_CHANNELS.
+
+    Returns a NeuroKit-style events dict (works with nk.epochs_create):
+        {"onset": [...], "duration": [...], "condition": [...], "label": [...]}
+    sorted by onset, with labels "1", "2", ... (trial numbers).
+    """
+    missing = [ch for ch in cfg.EVENT_CHANNELS if ch not in data.columns]
+    if missing:
+        raise KeyError(
+            f"Event channel(s) {missing} not found. Columns in file: {list(data.columns)}. "
+            "Check EVENT_CHANNELS in your config_local.py."
+        )
+
+    found = []
+    for channel, condition in cfg.EVENT_CHANNELS.items():
+        on = (data[channel].to_numpy(dtype=float) > cfg.EVENT_THRESHOLD).astype(np.int8)
+        edges = np.diff(np.concatenate([[0], on, [0]]))
+        onsets = np.flatnonzero(edges == 1)
+        offsets = np.flatnonzero(edges == -1)
+        found += [(on_, off - on_, condition) for on_, off in zip(onsets, offsets)]
+
+    found.sort(key=lambda e: e[0])
+    return {
+        "onset": np.array([e[0] for e in found], dtype=int),
+        "duration": np.array([e[1] for e in found], dtype=int),
+        "condition": [e[2] for e in found],
+        "label": [str(i + 1) for i in range(len(found))],
+    }
+
+
+def epoch_window(events, signal, sampling_rate):
+    """Return (epochs_start, epochs_end) in seconds for nk.epochs_create.
+
+    EVENT_DURATION_MODE = "fixed":   every epoch runs from onset+start to onset+end.
+    EVENT_DURATION_MODE = "channel": each epoch runs from onset+start until the
+                                     trigger channel switches off, plus `end` seconds.
+    """
+    win = cfg.EPOCH_WINDOWS[signal]
+    if cfg.EVENT_DURATION_MODE == "fixed":
+        return win["start"], win["end"]
+    if cfg.EVENT_DURATION_MODE == "channel":
+        return win["start"], [d / sampling_rate + win["end"] for d in events["duration"]]
+    raise ValueError(f"EVENT_DURATION_MODE must be 'fixed' or 'channel', not {cfg.EVENT_DURATION_MODE!r}")
+
+
+def make_epochs(data_clean, events, signal, sampling_rate):
+    """Cut epochs for one signal using the configured window / duration mode."""
+    start, end = epoch_window(events, signal, sampling_rate)
+    return nk.epochs_create(data_clean, events, sampling_rate=sampling_rate,
+                            epochs_start=start, epochs_end=end)
+
+
+# -----------------------------------------------------------------------------
+# HRV
+# -----------------------------------------------------------------------------
+def hrv_peaks(ecg_clean, sampling_rate):
+    """R-peak sample indices for HRV (with artifact correction if configured)."""
+    _, info = nk.ecg_peaks(ecg_clean, sampling_rate=sampling_rate,
+                           correct_artifacts=cfg.HRV_CORRECT_ARTIFACTS)
+    return np.asarray(info["ECG_R_Peaks"])
+
+
+def hrv_whole(peaks, sampling_rate, label):
+    """One-row DataFrame of HRV indices for the whole recording (or HRV_SEGMENT_SEC)."""
+    if cfg.HRV_SEGMENT_SEC is not None:
+        lo, hi = (int(t * sampling_rate) for t in cfg.HRV_SEGMENT_SEC)
+        peaks = peaks[(peaks >= lo) & (peaks < hi)]
+    funcs = {"time": nk.hrv_time, "frequency": nk.hrv_frequency, "nonlinear": nk.hrv_nonlinear}
+    parts = [funcs[i](peaks, sampling_rate=sampling_rate) for i in cfg.HRV_INDICES]
+    out = pd.concat(parts, axis=1)
+    out.insert(0, "HRV_Duration_s", (peaks[-1] - peaks[0]) / sampling_rate if len(peaks) > 1 else 0)
+    out.insert(0, "HRV_N_Beats", len(peaks))
+    out.insert(0, "participant_id", label)
+    return out
+
+
+def hrv_per_epoch(peaks, events, sampling_rate):
+    """Time-domain HRV for each epoch at least HRV_MIN_EPOCH_SEC long.
+
+    Returns a DataFrame indexed by trial label (same as the ECG results' Trial),
+    or None if no epoch is long enough.
+    """
+    start, ends = epoch_window(events, "ECG", sampling_rate)
+    if not isinstance(ends, list):
+        ends = [ends] * len(events["onset"])
+    rows = {}
+    for onset, end, trial in zip(events["onset"], ends, events["label"]):
+        if end - start < cfg.HRV_MIN_EPOCH_SEC:
+            continue
+        lo, hi = onset + int(start * sampling_rate), onset + int(end * sampling_rate)
+        p = peaks[(peaks >= lo) & (peaks < hi)]
+        if len(p) < 3:
+            continue
+        rows[trial] = nk.hrv_time(p, sampling_rate=sampling_rate).iloc[0]
+    return pd.DataFrame(rows).T if rows else None
 
 
 def tidy_results(df, label):
-    """Add participant column, readable condition names and rename Label -> Trial."""
+    """Add participant column and rename Label -> Trial."""
     df = df.copy()
     df.insert(0, "participant_id", label)
-    df["Condition"] = df["Condition"].replace(cfg.CONDITION_LABELS)
     return df.rename(columns={"Label": "Trial"})
 
 

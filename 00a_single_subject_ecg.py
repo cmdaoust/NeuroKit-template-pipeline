@@ -37,9 +37,7 @@ nk.ecg_plot(data_clean, info)
 plt.show()
 
 # Epoch + event-related analysis
-epochs = nk.epochs_create(data_clean, events, sampling_rate=sampling_rate,
-                          epochs_start=cfg.EPOCH_WINDOWS["ECG"]["start"],
-                          epochs_end=cfg.EPOCH_WINDOWS["ECG"]["end"])
+epochs = utils.make_epochs(data_clean, events, "ECG", sampling_rate)
 results = nk.ecg_analyze(epochs, sampling_rate=sampling_rate, method="event-related")
 results = utils.tidy_results(results, utils.participant_label(participant_id))
 print(results)

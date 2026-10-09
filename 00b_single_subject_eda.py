@@ -37,9 +37,7 @@ nk.eda_plot(data_clean, info)
 plt.show()
 
 # Epoch + event-related analysis
-epochs = nk.epochs_create(data_clean, events, sampling_rate=sampling_rate,
-                          epochs_start=cfg.EPOCH_WINDOWS["EDA"]["start"],
-                          epochs_end=cfg.EPOCH_WINDOWS["EDA"]["end"])
+epochs = utils.make_epochs(data_clean, events, "EDA", sampling_rate)
 results = nk.eda_analyze(epochs, sampling_rate=sampling_rate, method="event-related")
 results = utils.tidy_results(results, utils.participant_label(participant_id))
 print(results)

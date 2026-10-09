@@ -5,7 +5,8 @@
 For every participant with cleaned data, saves one HTML plot per signal:
   top panel    = raw signal
   bottom panel = cleaned signal, with a marker + solid grey line at each event
-                 onset and a dotted line where the epoch ends (EPOCH_WINDOWS end).
+                 onset and a dotted line where its epoch ends (set by
+                 EPOCH_WINDOWS and EVENT_DURATION_MODE).
 
 Use these to spot noisy segments. Bad ECG samples can be listed in
 MANUAL_REJECTION_FILE and 01a_process_ecg.py re-run with masking.
@@ -25,18 +26,6 @@ import utils
 
 SIGNALS = ["RSP", "EDA", "ECG"]
 DS = cfg.DOWNSAMPLE_FACTOR
-
-
-def extract_event_onsets(df, event_names):
-    """{event_name: [onset sample, ...]} — first sample of each above-zero run."""
-    events = {}
-    for name in event_names:
-        if name in df.columns:
-            active = df[name] > 0
-            onsets = df.index[active & ~active.shift(1, fill_value=False)].tolist()
-            if onsets:
-                events[name] = onsets
-    return events
 
 
 def vertical_lines(xs, y_min, y_max):
@@ -89,8 +78,16 @@ for label in participants:
         clean_plot = df_clean[col].iloc[::DS].reset_index(drop=True)
         y_min, y_max = clean_plot.min(), clean_plot.max()
 
-        win = cfg.EPOCH_WINDOWS[sig]
-        end_offset = int(win["end"] * sampling_rate)
+        # Events (from the trigger channels kept in the cleaned file) and epoch ends
+        try:
+            events = utils.find_events(df_clean)
+        except KeyError as e:
+            print(f"  {e} Plotting without events.")
+            events = {"onset": [], "duration": [], "condition": [], "label": []}
+        _, ends = utils.epoch_window(events, sig, sampling_rate)
+        if not isinstance(ends, list):
+            ends = [ends] * len(events["onset"])
+        end_samples = [o + int(e * sampling_rate) for o, e in zip(events["onset"], ends)]
 
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                             subplot_titles=("Raw signal", "Cleaned signal"))
@@ -99,14 +96,15 @@ for label in participants:
         fig.add_trace(go.Scatter(y=clean_plot, mode="lines", name="Cleaned",
                                  line=dict(color="crimson")), row=2, col=1)
 
-        for event_name, onsets in extract_event_onsets(df_clean, cfg.EVENT_COLUMNS).items():
-            onset_ds = [o // DS for o in onsets]
-            end_ds = [(o + end_offset) // DS for o in onsets]
+        for condition in dict.fromkeys(events["condition"]):   # one legend entry per condition
+            idx = [i for i, c in enumerate(events["condition"]) if c == condition]
+            onset_ds = [events["onset"][i] // DS for i in idx]
+            end_ds = [end_samples[i] // DS for i in idx]
 
             # Hoverable marker at each event onset
             fig.add_trace(go.Scatter(x=onset_ds, y=[y_min] * len(onset_ds), mode="markers",
                                      marker=dict(symbol="line-ns-open", size=12),
-                                     name=event_name), row=2, col=1)
+                                     name=str(condition)), row=2, col=1)
             # Solid line = event onset, dotted line = epoch end
             x, y = vertical_lines(onset_ds, y_min, y_max)
             fig.add_trace(go.Scatter(x=x, y=y, mode="lines", hoverinfo="skip", showlegend=False,

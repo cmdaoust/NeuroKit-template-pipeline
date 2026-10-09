@@ -4,20 +4,19 @@
 group-average responses per condition.
 
 Part 1: for each participant with cleaned data
-        - detects events once (from the cleaned RSP file's event columns) and
-          saves them to EPOCHS_PATH/sub-XXX_events.pkl
-        - cuts epochs for RSP, EDA and ECG using EPOCH_WINDOWS and saves
-          EPOCHS_PATH/sub-XXX_<SIGNAL>_epochs.pkl
+        - detects events once (from the trigger channels kept in its first
+          available cleaned file) and saves them to EPOCHS_PATH/sub-XXX_events.pkl
+        - cuts epochs for each signal using EPOCH_WINDOWS / EVENT_DURATION_MODE
+          and saves EPOCHS_PATH/sub-XXX_<SIGNAL>_epochs.pkl
 Part 2: averages the cleaned signal across trials and participants for each
         condition and saves a line plot to FIGURES_PATH.
 
-Requires: 01a/01b/01c to have been run (all three signals).
+Requires: at least one of 01a/01b/01c to have been run.
 """
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import neurokit2 as nk
-import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -25,7 +24,6 @@ import config as cfg
 import utils
 
 SIGNALS = ["RSP", "EDA", "ECG"]
-EVENTS_SOURCE = "RSP"   # cleaned file whose event columns are used to find events
 epochs_dir = Path(cfg.EPOCHS_PATH)
 epochs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -45,48 +43,41 @@ def get_events(label, df):
     """Load saved events, or detect them from df and save."""
     events_file = epochs_dir / f"{label}_events.pkl"
     if events_file.exists() and not cfg.FORCE_RECREATE_EVENTS:
-        return pd.read_pickle(events_file)
-    for col in cfg.EVENT_COLUMNS:          # guard against a missing channel
-        if col not in df.columns:
-            df[col] = 0
-    ev = utils.find_events(df)
-    events = {
-        "onset": np.asarray(ev["onset"], dtype=int),
-        "duration": np.asarray(ev["duration"], dtype=int),
-        "condition": np.asarray(ev["condition"], dtype=int),
-        "label": np.asarray(ev["label"], dtype=int),
-    }
+        events = pd.read_pickle(events_file)
+        # Only reuse saved events if they use the current condition labels
+        if set(events["condition"]) <= set(cfg.EVENT_CHANNELS.values()):
+            return events
+        print("  saved events use different condition labels; re-detecting.")
+    events = utils.find_events(df)
     pd.to_pickle(events, events_file)
     return events
 
 
-source_dir = Path(cfg.CLEANED_DIRS[EVENTS_SOURCE])
-participants = sorted(
-    f.name.split("_")[0] for f in source_dir.glob(f"*_{EVENTS_SOURCE}_cleaned.csv")
-) if source_dir.exists() else []
+participants = sorted({
+    f.name.split("_")[0]
+    for sig in SIGNALS if Path(cfg.CLEANED_DIRS[sig]).exists()
+    for f in Path(cfg.CLEANED_DIRS[sig]).glob(f"*_{sig}_cleaned.csv")
+})
 if not participants:
-    raise SystemExit(f"No cleaned {EVENTS_SOURCE} files in {source_dir}. Run the 01_ scripts first.")
+    raise SystemExit("No cleaned files found. Run the 01_ scripts first.")
 
 for label in participants:
     print(f"Processing {label}...")
+    cleaned = {}
+    for signal in SIGNALS:
+        try:
+            cleaned[signal] = load_cleaned_signal(label, signal)
+        except FileNotFoundError:
+            print(f"  no cleaned {signal} file, skipping {signal}.")
     try:
-        events = get_events(label, load_cleaned_signal(label, EVENTS_SOURCE))
+        events = get_events(label, next(iter(cleaned.values())))
     except Exception as e:
         print(f"  could not get events: {e}")
         continue
 
-    for signal in SIGNALS:
-        try:
-            signal_df = load_cleaned_signal(label, signal)
-        except FileNotFoundError as e:
-            print(f"  {e}")
-            continue
-        epochs = nk.epochs_create(
-            signal_df, events,
-            sampling_rate=cfg.SAMPLING_RATE,   # cleaned CSVs don't store sampling rate
-            epochs_start=cfg.EPOCH_WINDOWS[signal]["start"],
-            epochs_end=cfg.EPOCH_WINDOWS[signal]["end"],
-        )
+    for signal, signal_df in cleaned.items():
+        # cleaned CSVs don't store the sampling rate, so use SAMPLING_RATE from config
+        epochs = utils.make_epochs(signal_df, events, signal, cfg.SAMPLING_RATE)
         pd.to_pickle(epochs, epochs_dir / f"{label}_{signal}_epochs.pkl")
         print(f"  {signal} epochs saved.")
 
@@ -118,7 +109,6 @@ def plot_average_epochs(signal, title=None, participants=None):
 
     col = f"{signal}_Clean"
     combined = pd.concat(frames, ignore_index=True)
-    combined["Condition"] = combined["Condition"].replace(cfg.CONDITION_LABELS)
     avg = combined.groupby(["Condition", "Time"])[col].mean().reset_index()
 
     fig, ax = plt.subplots(figsize=(10, 5))
