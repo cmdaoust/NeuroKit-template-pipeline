@@ -89,11 +89,11 @@ MyStudy/
 └── Data/
     └── Physiology/
         └── Raw/
-            ├── 008.acq
-            ├── 009.acq
+            ├── sub-001.acq
+            ├── sub-002.acq
             └── ...
 ```
-- Each filename must **start with the 3-digit participant number** (`008`, `012`, …).
+- Each filename must **start with the 3-digit participant number** (`001`, `002`, …).
 - `MyStudy` can be any folder name you like, anywhere in Box.
 - Results will be saved into this same `Data` folder in Box.
 
