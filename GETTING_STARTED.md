@@ -89,8 +89,8 @@ MyStudy/
 └── Data/
     └── Physiology/
         └── Raw/
-            ├── 008_filtered_chopped.acq
-            ├── 009_filtered_chopped.acq
+            ├── 008.acq
+            ├── 009.acq
             └── ...
 ```
 - Each filename must **start with the 3-digit participant number** (`008`, `012`, …).
