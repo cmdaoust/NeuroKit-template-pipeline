@@ -9,7 +9,7 @@ of clicking. Copy each command from this page, paste it in, and press **Enter**.
 
 ---
 
-## Part 1 — One-time setup
+## Part 1 - One-time setup
 
 ### Step 1. Download the pipeline
 
@@ -70,7 +70,7 @@ If that worked, your setup is complete.
 
 ---
 
-## Part 2 — Set it up for your data
+## Part 2 - Set it up for your data
 
 ### Step 7. Install Box Drive and organise your data in Box
 
@@ -167,7 +167,7 @@ knows the pipeline before going further.
 
 ---
 
-## Part 3 — Run it
+## Part 3 - Run it
 
 ```
 python run_pipeline.py
